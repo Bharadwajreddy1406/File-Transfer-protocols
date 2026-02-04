@@ -1,0 +1,18 @@
+pip install django
+
+django-admin startproject config .
+
+python manage.py startapp ftp_client
+
+
+# 3. Create the services directory
+mkdir ftp_client/services
+touch ftp_client/services/__init__.py
+
+# 4. Create the management commands structure
+mkdir -p ftp_client/management/commands
+touch ftp_client/management/__init__.py
+touch ftp_client/management/commands/__init__.py
+
+# 5. Create the templates directory
+mkdir -p ftp_client/templates/ftp_client
