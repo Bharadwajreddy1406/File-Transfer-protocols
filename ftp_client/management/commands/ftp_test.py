@@ -131,6 +131,21 @@ class Command(BaseCommand):
                     import traceback
                     self.stdout.write(traceback.format_exc())
                     
+                try:
+
+                    # Trying PWD
+                    self.stdout.write(self.style.WARNING("STEP 2.6: Getting current directory..."))
+                    self.stdout.write("")
+                    current_dir = client.pwd()
+                    self.stdout.write("")
+                    self.stdout.write(self.style.SUCCESS(f"✓ CURRENT DIRECTORY: {current_dir}"))
+                except Exception as e:
+                    self.stdout.write("")
+                    self.stdout.write(self.style.ERROR(f"✗ PWD FAILED: {e}"))
+                    import traceback
+                    self.stdout.write(traceback.format_exc())
+
+                    
             client.quit()
             
             self.stdout.write("")
