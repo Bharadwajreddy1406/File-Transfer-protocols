@@ -6,7 +6,7 @@ class FTPConnection:
     This class is protocol-agnostic - it just manages the socket.
     """
     
-    def __init__(self, host, port=21, timeout=30):
+    def __init__(self, host, port=21, timeout=30, is_control=True):
         """
         Initialize connection parameters (doesn't connect yet)
         
@@ -14,10 +14,12 @@ class FTPConnection:
             host: Server address
             port: FTP port
             timeout: Connection timeout in seconds
+            is_control: True for control connection (expects welcome), False for data connection
         """
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.is_control = is_control
         self.sock = None
         
     def connect(self):
@@ -54,10 +56,12 @@ class FTPConnection:
         except Exception as e:
             raise Exception(f"Failed to connect to {self.host}:{self.port}: {e}")
         
-        # Control connection (port 21) gets welcome message
-        # Data connection (other ports) doesn't
-        if self.port == 21:
+        # Control connection gets welcome message
+        # Data connection doesn't
+        if self.is_control:
+            print(f"  [DEBUG] Reading welcome message from control connection...")
             response = self._read_response()
+            print(f"  [DEBUG] Welcome received: {response.strip()[:50]}...")
             return response
         else:
             # Data connection - no welcome message expected

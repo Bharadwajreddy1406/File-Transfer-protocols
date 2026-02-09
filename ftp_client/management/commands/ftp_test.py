@@ -36,6 +36,13 @@ class Command(BaseCommand):
             help='FTP server hostname (default: ftp.gnu.org)'
         )
         
+        parser.add_argument(
+        '--port',
+        type=int,
+        default=21,
+        help='FTP server port (default: 21)'
+        )
+        
         # Optional argument: username
         parser.add_argument(
             '--user',
@@ -64,6 +71,7 @@ class Command(BaseCommand):
         host = options['host']
         username = options['user']
         password = options['password']
+        port = options['port']
         
         # Print header
         self.stdout.write("=" * 60)
@@ -75,7 +83,7 @@ class Command(BaseCommand):
         self.stdout.write("")
         
         # Create FTP client
-        client = FTPClient(host)
+        client = FTPClient(host, port=port)
         
         try:
             # STEP 1: Connect to server
