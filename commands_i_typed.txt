@@ -16,3 +16,8 @@ touch ftp_client/management/commands/__init__.py
 
 # 5. Create the templates directory
 mkdir -p ftp_client/templates/ftp_client
+
+
+# activate the virtual environment
+
+.\venv\Scripts\activate
