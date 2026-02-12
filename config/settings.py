@@ -39,6 +39,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'ftp_client',
     'ftp_server',
+
+    'sftp_client',
 ]
 
 MIDDLEWARE = [
