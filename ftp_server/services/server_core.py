@@ -1,5 +1,7 @@
 import socket
 from .session import FTPSession
+from .data_connection import PassiveModeManager
+from .file_system import FileSystemHelper
 
 
 class FTPServer:
@@ -119,6 +121,74 @@ class FTPServer:
             elif command == "NOOP":
                 self.send_response(session, "200 OK")
 
+            elif command == "PASV":
+                self.handle_pasv(session)
+
+            elif command == "EPSV":
+                self.handle_epsv(session)
+
+            elif command == "LIST":
+                self.handle_list(session, argument or ".")
+
+            elif command == "RETR":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                else:
+                    self.handle_retr(session, argument)
+
+            elif command == "STOR":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                else:
+                    self.handle_stor(session, argument)
+
+            elif command == "DELE":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                else:
+                    self.handle_dele(session, argument)
+
+            elif command == "MKD":
+                if not argument:
+                    self.send_response(session, "501 Missing directory name")
+                else:
+                    self.handle_mkd(session, argument)
+
+            elif command == "RMD":
+                if not argument:
+                    self.send_response(session, "501 Missing directory name")
+                else:
+                    self.handle_rmd(session, argument)
+
+            elif command == "RNFR":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                else:
+                    # Store the source filename for RNTO
+                    session.rename_from = argument
+                    self.send_response(session, "350 Ready for RNTO")
+
+            elif command == "RNTO":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                elif not hasattr(session, 'rename_from') or not session.rename_from:
+                    self.send_response(session, "503 RNFR required first")
+                else:
+                    self.handle_rnto(session, session.rename_from, argument)
+                    session.rename_from = None
+
+            elif command == "SIZE":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                else:
+                    self.handle_size(session, argument)
+
+            elif command == "MDTM":
+                if not argument:
+                    self.send_response(session, "501 Missing filename")
+                else:
+                    self.handle_mdtm(session, argument)
+
             elif command == "QUIT":
                 self.send_response(session, "221 Goodbye")
                 break
@@ -152,3 +222,321 @@ class FTPServer:
                 break
 
         return data.decode("utf-8", errors="ignore").strip()
+
+    def handle_pasv(self, session: FTPSession):
+        """
+        Handle PASV (Passive Mode) command.
+        """
+        try:
+            # Create passive mode manager
+            pasv_mgr = PassiveModeManager(session)
+            
+            # Setup passive listener
+            host, port = pasv_mgr.setup_passive_mode(self.host)
+            
+            # Store in session for later use
+            session.passive_manager = pasv_mgr
+            
+            # Calculate PASV response format: h1,h2,h3,h4,p1,p2
+            # IP address parts
+            h1, h2, h3, h4 = host.split('.')
+            
+            # Port parts (port = p1*256 + p2)
+            p1 = port // 256
+            p2 = port % 256
+            
+            # Send response
+            self.send_response(session, f"227 Entering Passive Mode ({h1},{h2},{h3},{h4},{p1},{p2})")
+            
+        except Exception as e:
+            print(f"[ERROR] PASV failed: {e}")
+            self.send_response(session, "425 Cannot open passive connection")
+
+    def handle_epsv(self, session: FTPSession):
+        """
+        Handle EPSV (Extended Passive Mode) command.
+        """
+        try:
+            # Create passive mode manager
+            pasv_mgr = PassiveModeManager(session)
+            
+            # Setup passive listener
+            host, port = pasv_mgr.setup_passive_mode(self.host)
+            
+            # Store in session for later use
+            session.passive_manager = pasv_mgr
+            
+            # EPSV response format: (|||port|)
+            self.send_response(session, f"229 Entering Extended Passive Mode (|||{port}|)")
+            
+        except Exception as e:
+            print(f"[ERROR] EPSV failed: {e}")
+            self.send_response(session, "425 Cannot open passive connection")
+
+    def handle_list(self, session: FTPSession, path):
+        """
+        Handle LIST command - send directory listing.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        if not hasattr(session, 'passive_manager') or not session.passive_manager:
+            self.send_response(session, "425 Use PASV or EPSV first")
+            return
+        
+        try:
+            # Get real path
+            real_path = session.get_real_path(path)
+            
+            # Get directory listing
+            listing = FileSystemHelper.list_directory(real_path)
+            
+            # Tell client we're about to send data
+            self.send_response(session, "150 Opening data connection for directory listing")
+            
+            # Accept data connection
+            session.passive_manager.accept_data_connection()
+            
+            # Send listing
+            session.passive_manager.send_data(listing.encode('utf-8'))
+            
+            # Close data connection
+            session.passive_manager.close()
+            
+            # Tell client transfer is complete
+            self.send_response(session, "226 Directory listing sent")
+            
+        except FileNotFoundError:
+            session.passive_manager.close()
+            self.send_response(session, "550 Directory not found")
+        except PermissionError:
+            session.passive_manager.close()
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] LIST failed: {e}")
+            session.passive_manager.close()
+            self.send_response(session, "550 Failed to list directory")
+
+    def handle_retr(self, session: FTPSession, filename):
+        """
+        Handle RETR command - send file to client.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        if not hasattr(session, 'passive_manager') or not session.passive_manager:
+            self.send_response(session, "425 Use PASV or EPSV first")
+            return
+        
+        try:
+            # Get real path
+            real_path = session.get_real_path(filename)
+            
+            # Read file
+            file_data = FileSystemHelper.read_file(real_path)
+            
+            # Tell client we're about to send data
+            self.send_response(session, f"150 Opening data connection for {filename} ({len(file_data)} bytes)")
+            
+            # Accept data connection
+            session.passive_manager.accept_data_connection()
+            
+            # Send file
+            session.passive_manager.send_data(file_data)
+            
+            # Close data connection
+            session.passive_manager.close()
+            
+            # Tell client transfer is complete
+            self.send_response(session, "226 Transfer complete")
+            
+        except FileNotFoundError:
+            session.passive_manager.close()
+            self.send_response(session, "550 File not found")
+        except IsADirectoryError:
+            session.passive_manager.close()
+            self.send_response(session, "550 Is a directory")
+        except PermissionError:
+            session.passive_manager.close()
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] RETR failed: {e}")
+            session.passive_manager.close()
+            self.send_response(session, "550 Failed to retrieve file")
+
+    def handle_stor(self, session: FTPSession, filename):
+        """
+        Handle STOR command - receive file from client.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        if not hasattr(session, 'passive_manager') or not session.passive_manager:
+            self.send_response(session, "425 Use PASV or EPSV first")
+            return
+        
+        try:
+            # Get real path
+            real_path = session.get_real_path(filename)
+            
+            # Tell client we're ready to receive
+            self.send_response(session, f"150 Ready to receive {filename}")
+            
+            # Accept data connection
+            session.passive_manager.accept_data_connection()
+            
+            # Receive file data
+            file_data = session.passive_manager.receive_data()
+            
+            # Write file
+            bytes_written = FileSystemHelper.write_file(real_path, file_data)
+            
+            # Close data connection
+            session.passive_manager.close()
+            
+            # Tell client transfer is complete
+            self.send_response(session, f"226 Transfer complete ({bytes_written} bytes received)")
+            
+        except PermissionError:
+            session.passive_manager.close()
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] STOR failed: {e}")
+            session.passive_manager.close()
+            self.send_response(session, "550 Failed to store file")
+
+    def handle_dele(self, session: FTPSession, filename):
+        """
+        Handle DELE command - delete file.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        try:
+            real_path = session.get_real_path(filename)
+            FileSystemHelper.delete_file(real_path)
+            self.send_response(session, f"250 File {filename} deleted")
+            
+        except FileNotFoundError:
+            self.send_response(session, "550 File not found")
+        except IsADirectoryError:
+            self.send_response(session, "550 Is a directory, use RMD")
+        except PermissionError:
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] DELE failed: {e}")
+            self.send_response(session, "550 Failed to delete file")
+
+    def handle_mkd(self, session: FTPSession, dirname):
+        """
+        Handle MKD command - make directory.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        try:
+            real_path = session.get_real_path(dirname)
+            FileSystemHelper.make_directory(real_path)
+            self.send_response(session, f'257 "{dirname}" directory created')
+            
+        except FileExistsError:
+            self.send_response(session, "550 Directory already exists")
+        except PermissionError:
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] MKD failed: {e}")
+            self.send_response(session, "550 Failed to create directory")
+
+    def handle_rmd(self, session: FTPSession, dirname):
+        """
+        Handle RMD command - remove directory.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        try:
+            real_path = session.get_real_path(dirname)
+            FileSystemHelper.remove_directory(real_path)
+            self.send_response(session, f"250 Directory {dirname} removed")
+            
+        except FileNotFoundError:
+            self.send_response(session, "550 Directory not found")
+        except NotADirectoryError:
+            self.send_response(session, "550 Not a directory")
+        except OSError:
+            self.send_response(session, "550 Directory not empty")
+        except PermissionError:
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] RMD failed: {e}")
+            self.send_response(session, "550 Failed to remove directory")
+
+    def handle_rnto(self, session: FTPSession, old_name, new_name):
+        """
+        Handle RNTO command - rename file (second part of rename).
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        try:
+            old_path = session.get_real_path(old_name)
+            new_path = session.get_real_path(new_name)
+            FileSystemHelper.rename(old_path, new_path)
+            self.send_response(session, "250 Rename successful")
+            
+        except FileNotFoundError:
+            self.send_response(session, "550 Source file not found")
+        except FileExistsError:
+            self.send_response(session, "550 Destination already exists")
+        except PermissionError:
+            self.send_response(session, "550 Permission denied")
+        except Exception as e:
+            print(f"[ERROR] RNTO failed: {e}")
+            self.send_response(session, "550 Failed to rename")
+
+    def handle_size(self, session: FTPSession, filename):
+        """
+        Handle SIZE command - get file size.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        try:
+            real_path = session.get_real_path(filename)
+            size = FileSystemHelper.get_file_size(real_path)
+            self.send_response(session, f"213 {size}")
+            
+        except FileNotFoundError:
+            self.send_response(session, "550 File not found")
+        except IsADirectoryError:
+            self.send_response(session, "550 Is a directory")
+        except Exception as e:
+            print(f"[ERROR] SIZE failed: {e}")
+            self.send_response(session, "550 Failed to get file size")
+
+    def handle_mdtm(self, session: FTPSession, filename):
+        """
+        Handle MDTM command - get modification time.
+        """
+        if not session.is_authenticated:
+            self.send_response(session, "530 Not logged in")
+            return
+        
+        try:
+            real_path = session.get_real_path(filename)
+            mtime = FileSystemHelper.get_modification_time(real_path)
+            self.send_response(session, f"213 {mtime}")
+            
+        except FileNotFoundError:
+            self.send_response(session, "550 File not found")
+        except Exception as e:
+            print(f"[ERROR] MDTM failed: {e}")
+            self.send_response(session, "550 Failed to get modification time")

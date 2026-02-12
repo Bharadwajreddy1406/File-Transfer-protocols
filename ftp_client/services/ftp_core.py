@@ -258,8 +258,8 @@ class FTPClient:
                 data_host, data_port = self._parse_pasv_response(last_line)
                 print(f"Data connection: {data_host}:{data_port}")
                 
-                # Open data connection
-                data_conn = FTPConnection(data_host, data_port)
+                # Open data connection (is_control=False means no welcome message)
+                data_conn = FTPConnection(data_host, data_port, is_control=False)
                 data_conn.connect()
                 print("Data connection established")
                 
@@ -291,8 +291,8 @@ class FTPClient:
                 data_host, data_port = self._parse_pasv_response(last_line)
                 print(f"Data connection: {data_host}:{data_port}")
                 
-                # Open data connection
-                data_conn = FTPConnection(data_host, data_port)
+                # Open data connection (is_control=False means no welcome message)
+                data_conn = FTPConnection(data_host, data_port, is_control=False)
                 data_conn.connect()
                 print("Data connection established")
                 
@@ -644,3 +644,263 @@ class FTPClient:
             except ConnectionAbortedError:
                 pass
             raise
+
+    def delete_file(self, filename):
+        """
+        Delete a file on the FTP server.
+        
+        Args:
+            filename: Name of file to delete
+            
+        Returns:
+            bool: True if successful
+        """
+        if not self.logged_in:
+            raise Exception("Must login before deleting files")
+        
+        print(f"\n→ Deleting file: {filename}")
+        response = self.connection.send_command(f"DELE {filename}")
+        print(f"← Server says: {response.strip()}")
+        
+        # 250 = File deleted successfully
+        if response.startswith('250'):
+            print(f"  ✓ File deleted: {filename}")
+            return True
+        elif response.startswith('550'):
+            print(f"  ✗ File not found or permission denied")
+            return False
+        else:
+            print(f"  ✗ Delete failed: {response.strip()}")
+            return False
+
+    def make_directory(self, dirname):
+        """
+        Create a new directory on the FTP server.
+        
+        Args:
+            dirname: Name of directory to create
+            
+        Returns:
+            str: Path of created directory (if successful)
+        """
+        if not self.logged_in:
+            raise Exception("Must login before creating directories")
+        
+        print(f"\n→ Creating directory: {dirname}")
+        response = self.connection.send_command(f"MKD {dirname}")
+        print(f"← Server says: {response.strip()}")
+        
+        # 257 = Directory created
+        if response.startswith('257'):
+            # Extract directory path from quotes
+            import re
+            match = re.search(r'"([^"]+)"', response)
+            if match:
+                created_path = match.group(1)
+                print(f"  ✓ Directory created: {created_path}")
+                return created_path
+            else:
+                print("  ✓ Directory created")
+                return dirname
+        elif response.startswith('550'):
+            print(f"  ✗ Cannot create directory (may already exist or permission denied)")
+            return None
+        else:
+            print(f"  ✗ Failed: {response.strip()}")
+            return None
+
+    def remove_directory(self, dirname):
+        """
+        Remove a directory on the FTP server.
+        
+        Args:
+            dirname: Name of directory to remove
+            
+        Returns:
+            bool: True if successful
+        """
+        if not self.logged_in:
+            raise Exception("Must login before removing directories")
+        
+        print(f"\n→ Removing directory: {dirname}")
+        response = self.connection.send_command(f"RMD {dirname}")
+        print(f"← Server says: {response.strip()}")
+        
+        # 250 = Directory removed
+        if response.startswith('250'):
+            print(f"  ✓ Directory removed: {dirname}")
+            return True
+        elif response.startswith('550'):
+            print(f"  ✗ Directory not found or not empty")
+            return False
+        else:
+            print(f"  ✗ Failed: {response.strip()}")
+            return False
+
+    def rename(self, old_name, new_name):
+        """
+        Rename a file or directory on the FTP server.
+        
+        This uses two commands:
+        1. RNFR (Rename From) - specify source
+        2. RNTO (Rename To) - specify destination
+        
+        Args:
+            old_name: Current name
+            new_name: New name
+            
+        Returns:
+            bool: True if successful
+        """
+        if not self.logged_in:
+            raise Exception("Must login before renaming files")
+        
+        print(f"\n→ Renaming: {old_name} → {new_name}")
+        
+        # Step 1: Send RNFR command
+        print(f"→ Sending: RNFR {old_name}")
+        rnfr_response = self.connection.send_command(f"RNFR {old_name}")
+        print(f"← Server says: {rnfr_response.strip()}")
+        
+        # 350 = Ready for RNTO
+        if not rnfr_response.startswith('350'):
+            print(f"  ✗ RNFR failed (file not found?)")
+            return False
+        
+        # Step 2: Send RNTO command
+        print(f"→ Sending: RNTO {new_name}")
+        rnto_response = self.connection.send_command(f"RNTO {new_name}")
+        print(f"← Server says: {rnto_response.strip()}")
+        
+        # 250 = Rename successful
+        if rnto_response.startswith('250'):
+            print(f"  ✓ Renamed successfully")
+            return True
+        else:
+            print(f"  ✗ RNTO failed: {rnto_response.strip()}")
+            return False
+
+    def get_file_size(self, filename):
+        """
+        Get the size of a file on the FTP server.
+        
+        Args:
+            filename: Name of file
+            
+        Returns:
+            int: File size in bytes, or None if failed
+        """
+        if not self.logged_in:
+            raise Exception("Must login before getting file size")
+        
+        print(f"\n→ Getting size of: {filename}")
+        response = self.connection.send_command(f"SIZE {filename}")
+        print(f"← Server says: {response.strip()}")
+        
+        # 213 = File size response
+        if response.startswith('213'):
+            # Extract size from response
+            parts = response.split()
+            if len(parts) >= 2:
+                try:
+                    size = int(parts[1])
+                    print(f"  File size: {size:,} bytes")
+                    return size
+                except ValueError:
+                    pass
+        
+        print(f"  ✗ Failed to get file size")
+        return None
+
+    def get_modification_time(self, filename):
+        """
+        Get the last modification time of a file on the FTP server.
+        
+        Args:
+            filename: Name of file
+            
+        Returns:
+            str: Modification time (YYYYMMDDHHMMSS format), or None if failed
+        """
+        if not self.logged_in:
+            raise Exception("Must login before getting modification time")
+        
+        print(f"\n→ Getting modification time of: {filename}")
+        response = self.connection.send_command(f"MDTM {filename}")
+        print(f"← Server says: {response.strip()}")
+        
+        # 213 = Modification time response
+        if response.startswith('213'):
+            # Extract timestamp from response
+            parts = response.split()
+            if len(parts) >= 2:
+                timestamp = parts[1]
+                print(f"  Modification time: {timestamp}")
+                return timestamp
+        
+        print(f"  ✗ Failed to get modification time")
+        return None
+
+    def noop(self):
+        """
+        Send NOOP (No Operation) command to keep connection alive.
+        
+        Returns:
+            bool: True if server responded positively
+        """
+        if not self.logged_in:
+            raise Exception("Must login before using NOOP")
+        
+        print("\n→ Sending: NOOP (keep alive)")
+        response = self.connection.send_command("NOOP")
+        print(f"← Server says: {response.strip()}")
+        
+        # 200 = Command okay
+        return response.startswith('200')
+
+    def system_type(self):
+        """
+        Get the server's system type.
+        
+        Returns:
+            str: System type string
+        """
+        if not self.logged_in:
+            raise Exception("Must login before getting system type")
+        
+        print("\n→ Sending: SYST (get system type)")
+        response = self.connection.send_command("SYST")
+        print(f"← Server says: {response.strip()}")
+        
+        # 215 = System type response
+        if response.startswith('215'):
+            # Extract system type
+            system_type = response[4:].strip()
+            print(f"  System type: {system_type}")
+            return system_type
+        
+        return None
+
+    def set_transfer_type(self, type_code):
+        """
+        Set the transfer type (ASCII or Binary).
+        
+        Args:
+            type_code: 'A' for ASCII, 'I' for Binary
+            
+        Returns:
+            bool: True if successful
+        """
+        if not self.logged_in:
+            raise Exception("Must login before setting transfer type")
+        
+        if type_code not in ['A', 'I']:
+            raise ValueError("Type must be 'A' (ASCII) or 'I' (Binary)")
+        
+        type_name = "ASCII" if type_code == 'A' else "Binary"
+        print(f"\n→ Setting transfer type to: {type_name}")
+        response = self.connection.send_command(f"TYPE {type_code}")
+        print(f"← Server says: {response.strip()}")
+        
+        # 200 = Type set successfully
+        return response.startswith('200')
